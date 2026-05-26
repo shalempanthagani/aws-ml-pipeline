@@ -1,0 +1,184 @@
+{
+  "Comment": "ML Pipeline: Glue ETL -> SageMaker Training -> Endpoint",
+  "StartAt": "StartGlueWorkflow",
+
+  "States": {
+
+    "StartGlueWorkflow": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:glue:startWorkflowRun",
+      "Parameters": {
+        "Name": "ml-pipeline-dev-etl-workflow"
+      },
+      "ResultPath": "$.glueRun",
+      "Next": "WaitForGlue"
+    },
+
+    "WaitForGlue": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "CheckGlueStatus"
+    },
+
+    "CheckGlueStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:glue:getWorkflowRun",
+      "Parameters": {
+        "Name": "ml-pipeline-dev-etl-workflow",
+        "RunId.$": "$.glueRun.RunId",
+        "IncludeGraph": false
+      },
+      "ResultPath": "$.glueStatus",
+      "Next": "IsGlueDone"
+    },
+
+    "IsGlueDone": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.glueStatus.Run.Status",
+          "StringEquals": "COMPLETED",
+          "Next": "StartTraining"
+        },
+        {
+          "Variable": "$.glueStatus.Run.Status",
+          "StringEquals": "RUNNING",
+          "Next": "WaitForGlue"
+        }
+      ],
+      "Default": "PipelineFailed"
+    },
+
+    "StartTraining": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+  "Parameters": {
+    "TrainingJobName.$": "States.Format('ml-pipeline-training-{}', $$.Execution.Name)",
+    "AlgorithmSpecification": {
+      "TrainingImage": "683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-xgboost:1.7-1",
+      "TrainingInputMode": "File"
+    },
+    "RoleArn": "${sagemaker_role_arn}",
+    "HyperParameters": {
+      "objective": "reg:squarederror",
+      "num_round": "10",
+      "max_depth": "5",
+      "eta": "0.2"
+    },
+    "InputDataConfig": [
+      {
+        "ChannelName": "train",
+        "DataSource": {
+          "S3DataSource": {
+            "S3DataType": "S3Prefix",
+            "S3Uri": "s3://ml-pipeline-dev-bucket/cleaned/",
+            "S3DataDistributionType": "FullyReplicated"
+          }
+        },
+        "ContentType": "text/csv"
+      }
+    ],
+    "OutputDataConfig": {
+      "S3OutputPath": "s3://ml-pipeline-dev-bucket/models/"
+    },
+    "ResourceConfig": {
+      "InstanceType": "ml.m5.large",
+      "InstanceCount": 1,
+      "VolumeSizeInGB": 10
+    },
+    "StoppingCondition": {
+      "MaxRuntimeInSeconds": 3600
+    }
+  },
+  "ResultPath": "$.trainingJob",
+  "Next": "CreateModel"
+},
+
+    "CreateModel": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:createModel",
+      "Parameters": {
+        "ModelName.$": "States.Format('ml-pipeline-model-{}', $$.Execution.Name)",
+        "ExecutionRoleArn": "${sagemaker_role_arn}",
+        "PrimaryContainer": {
+          "Image": "683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-xgboost:1.7-1",
+          "ModelDataUrl.$": "$.trainingJob.ModelArtifacts.S3ModelArtifacts"
+        }
+      },
+      "ResultPath": "$.model",
+      "Next": "CreateEndpointConfig"
+    },
+
+    "CreateEndpointConfig": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:createEndpointConfig",
+      "Parameters": {
+        "EndpointConfigName.$": "States.Format('ml-pipeline-epc-{}', $$.Execution.Name)",
+        "ProductionVariants": [
+          {
+            "VariantName": "primary",
+            "ModelName.$": "States.Format('ml-pipeline-model-{}', $$.Execution.Name)",
+            "InstanceType": "ml.m5.large",
+            "InitialInstanceCount": 1
+          }
+        ]
+      },
+      "ResultPath": "$.endpointConfig",
+      "Next": "CreateEndpoint"
+    },
+
+    "CreateEndpoint": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:createEndpoint",
+      "Parameters": {
+        "EndpointName": "ml-pipeline-endpoint",
+        "EndpointConfigName.$": "States.Format('ml-pipeline-epc-{}', $$.Execution.Name)"
+      },
+      "ResultPath": "$.endpoint",
+      "Next": "WaitForEndpoint"
+    },
+
+    "WaitForEndpoint": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "CheckEndpointStatus"
+    },
+
+    "CheckEndpointStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sagemaker:describeEndpoint",
+      "Parameters": {
+        "EndpointName": "ml-pipeline-endpoint"
+      },
+      "ResultPath": "$.endpointStatus",
+      "Next": "IsEndpointReady"
+    },
+
+    "IsEndpointReady": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.endpointStatus.EndpointStatus",
+          "StringEquals": "InService",
+          "Next": "PipelineSucceeded"
+        },
+        {
+          "Variable": "$.endpointStatus.EndpointStatus",
+          "StringEquals": "Creating",
+          "Next": "WaitForEndpoint"
+        }
+      ],
+      "Default": "PipelineFailed"
+    },
+
+    "PipelineSucceeded": {
+      "Type": "Succeed"
+    },
+
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineError",
+      "Cause": "Pipeline failed - check CloudWatch logs"
+    }
+  }
+}
