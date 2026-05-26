@@ -22,13 +22,16 @@ S3 Upload → EventBridge → Step Functions → Glue ETL → SageMaker Training
 - **AWS SageMaker** — model training and serving
 
 ## Structure
-├── terraform/        # All infrastructure code
-│   └── modules/      # VPC, Lambda, EC2, Cognito, Glue, Step Functions
-├── spring-boot/      # File upload service
-├── glue/             # ETL job scripts
-├── step_functions/   # State machine definition
-├── lambda_src/       # Lambda handler
-└── scripts/          # Data generation script
+
+```
+terraform/          # All infrastructure code
+  └── modules/      # VPC, Lambda, EC2, Cognito, Glue, Step Functions
+spring-boot/        # File upload service
+glue/               # ETL job scripts
+step_functions/     # State machine definition
+lambda_src/         # Lambda handler
+scripts/            # Data generation script
+```
 
 ## How to run
 
